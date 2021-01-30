@@ -1,3 +1,3 @@
 # About
 
-本示例演示了 g_main_loop 基础用法。
+本示例演示了利用 g_main_loop 监听文件事件。
