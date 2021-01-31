@@ -1,86 +1,161 @@
 #include <stdio.h>
 #include <glib.h>
 
-/* timeout functions */
-gboolean count_down(gpointer data);
-gboolean cancel_fire(gpointer data);
+#include <arpa/inet.h>
+#include <sys/socket.h>
 
-/* idle functions */
-gboolean say_idle(gpointer data);
+/* GSourceEcho */
+typedef struct GSourceEcho {
+	GSource source;
+	GIOChannel *channel;
+	GPollFD fd;
+} GSourceEcho;
+
+gboolean g_source_echo_prepare(GSource * source, gint * timeout);
+gboolean g_source_echo_check(GSource * source);
+gboolean g_source_echo_dispatch(GSource * source,
+				GSourceFunc callback, gpointer user_data);
+void g_source_echo_finalize(GSource * source);
+
+gboolean echo(GIOChannel * channel);
+
+/* tcp client */
+int client_fd;
+
+int client(void);
 
 int main(int argc, char *argv[])
 {
-	/* GMainLoop表示一个主事件循环，由g_main_loop_new创建 */
+	if (-1 == client()) {
+		g_print("%s\n", "start client error");
+
+		return -1;
+	}
+
 	GMainLoop *loop = g_main_loop_new(NULL, FALSE);
+	GMainContext *context = g_main_loop_get_context(loop);
 
-	/* 添加超时事件源 */
-	g_timeout_add(500, count_down, NULL);
-	g_timeout_add(8000, cancel_fire, loop);
+	GSourceFuncs g_source_echo_funcs = {
+		g_source_echo_prepare,
+		g_source_echo_check,
+		g_source_echo_dispatch,
+		g_source_echo_finalize,
+	};
 
-	/* 添加空闲函数，当没有更高优先级的事件时，
-	 * 空闲函数就会被执行
-	 */
-	g_idle_add(say_idle, NULL);
+	GSource *source =
+	    g_source_new(&g_source_echo_funcs, sizeof(GSourceEcho));
+	GSourceEcho *source_echo = (GSourceEcho *) source;
 
-	/* 该函数将不停地检查事件源中是否有新事件进行分发
-	 *
-	 * 在某事件处理函数中调用 g_main_loop_quit 将导致
-	 * 该函数退出
-	 */
+	source_echo->channel = g_io_channel_unix_new(client_fd);
+	source_echo->fd.fd = client_fd;
+	source_echo->fd.events = G_IO_IN;
+	g_source_add_poll(source, &source_echo->fd);
+
+	g_source_set_callback(source, (GSourceFunc) echo, NULL, NULL);
+
+	g_source_attach(source, context);
+	g_source_unref(source);
+
 	g_main_loop_run(loop);
+
+	g_main_context_unref(context);
+	g_main_loop_unref(loop);
 
 	return 0;
 }
 
-/* 超时事件处理函数
+/* 对于文件描述符源，prepare 通常返回 FALSE，
+ * 因为它必须等调用 poll 后才能知道是否需要处理事件
  *
- * 该函数会重复运行直到返回 FALSE，
- * 与此同时，定时器被销毁
- */
-gboolean count_down(gpointer data)
+ * 返回的超时为 -1，表示它不介意 poll 调用阻塞多长时间
+*/
+gboolean g_source_echo_prepare(GSource * source, gint * timeout)
 {
-	static int counter = 10;
+	*timeout = -1;
 
-	if (counter < 1) {
-		printf("-----[FIRE]-----\n");
+	return FALSE;
+}
 
-		/* 定时器被销毁，count_down 不会被再次运行 */
+/* 测试 poll 调用的结果，以查看事件是否发生
+ */
+gboolean g_source_echo_check(GSource * source)
+{
+	GSourceEcho *source_echo = (GSourceEcho *) source;
+
+	/* events 为要监听的事件
+	 * revents 为 poll 监听到的事件
+	 *
+	 * 因为只监听了一个事件，因此简化了比较方式
+	 */
+	if (source_echo->fd.revents != source_echo->fd.events) {
 		return FALSE;
 	}
 
-	printf("-----[% 4d]-----\n", counter--);
-
-	/* count_down 在发生下次超时事件时运行 */
 	return TRUE;
 }
 
-/* 超时事件处理函数 */
-gboolean cancel_fire(gpointer data)
+gboolean g_source_echo_dispatch(GSource * source,
+				GSourceFunc callback, gpointer user_data)
 {
-	GMainLoop *loop = data;
+	gboolean again = G_SOURCE_REMOVE;
 
-	printf("-----[QUIT]-----\n");
-	/* 退出主循环，g_main_loop_run 返回 */
-	g_main_loop_quit(loop);
+	GSourceEcho *source_echo = (GSourceEcho *) source;
 
-	return FALSE;
+	if (callback) {
+		again = callback(source_echo->channel);
+	}
+
+	return again;
 }
 
-/* 空闲函数
- *
- * 如果该函数返回 FALSE，该事件源将被删除，该函数不会再次运行
+/* 释放 source 持有的资源的应用计数
+ * 然后 source 才可以被安全地销毁，不会造成内存泄露
  */
-gboolean say_idle(gpointer data)
+void g_source_echo_finalize(GSource * source)
 {
-	printf("-----[IDLE]-----\n");
+	GSourceEcho *source_echo = (GSourceEcho *) source;
 
- 	/* 如果该函数返回 FALSE，该事件源将被删除，
-	 * 该函数不会再次运行
-	 */
-	return FALSE;
+	if (source_echo->channel) {
+		g_io_channel_unref(source_echo->channel);
+	}
+}
 
- 	/* 如果该函数返回 TRUE
-	 * 该函数会在没有更高优先级的事件时，再次运行
-	 */
-	// return TRUE;
+gboolean echo(GIOChannel * channel)
+{
+	gsize len = 0;
+	gchar *buf = NULL;
+
+	g_io_channel_read_line(channel, &buf, &len, NULL, NULL);
+
+	if (len > 0) {
+		g_print("%s", buf);
+		g_io_channel_write_chars(channel, buf, len, NULL, NULL);
+		g_io_channel_flush(channel, NULL);
+	}
+
+	g_free(buf);
+
+	return TRUE;
+}
+
+int client(void)
+{
+	struct sockaddr_in serv_addr;
+
+	if (-1 == (client_fd = socket(AF_INET, SOCK_STREAM, 0))) {
+		return -1;
+	}
+
+	memset(&serv_addr, 0, sizeof serv_addr);
+	serv_addr.sin_family = AF_INET;
+	serv_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+	serv_addr.sin_port = htons(9999);
+
+	if (-1 ==
+	    connect(client_fd, (struct sockaddr *) &serv_addr,
+		    sizeof serv_addr)) {
+		return -1;
+	}
+
+	return 0;
 }

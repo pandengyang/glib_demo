@@ -10,7 +10,9 @@ gboolean say_idle(gpointer data);
 
 int main(int argc, char *argv[])
 {
-	/* GMainLoop表示一个主事件循环，由g_main_loop_new创建 */
+	/* GMainLoop 表示一个主事件循环，由g_main_loop_new 创建
+	 * 第一个参数为 GMainContext，为 NULL 表示默认 GMainContext
+	 */
 	GMainLoop *loop = g_main_loop_new(NULL, FALSE);
 
 	/* 添加超时事件源 */
@@ -28,6 +30,9 @@ int main(int argc, char *argv[])
 	 * 该函数退出
 	 */
 	g_main_loop_run(loop);
+
+	/* 减少 loop 引用计数，如果引用计数为 0，释放 loop */
+	g_main_loop_unref(loop);
 
 	return 0;
 }
@@ -74,12 +79,12 @@ gboolean say_idle(gpointer data)
 {
 	printf("-----[IDLE]-----\n");
 
- 	/* 如果该函数返回 FALSE，该事件源将被删除，
+	/* 如果该函数返回 FALSE，该事件源将被删除，
 	 * 该函数不会再次运行
 	 */
 	return FALSE;
 
- 	/* 如果该函数返回 TRUE
+	/* 如果该函数返回 TRUE
 	 * 该函数会在没有更高优先级的事件时，再次运行
 	 */
 	// return TRUE;

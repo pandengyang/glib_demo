@@ -1,86 +1,117 @@
 #include <stdio.h>
 #include <glib.h>
 
-/* timeout functions */
-gboolean count_down(gpointer data);
-gboolean cancel_fire(gpointer data);
+/* GSourceMyIdle */
+typedef struct GSourceMyIdle {
+	GSource source;
+} GSourceMyIdle;
 
-/* idle functions */
-gboolean say_idle(gpointer data);
+gboolean g_source_myidle_prepare(GSource * source, gint * timeout);
+gboolean g_source_myidle_check(GSource * source);
+gboolean g_source_myidle_dispatch(GSource * source,
+				  GSourceFunc callback,
+				  gpointer user_data);
+void g_source_myidle_finalize(GSource * source);
+
+gboolean myidle(gchar * message);
 
 int main(int argc, char *argv[])
 {
-	/* GMainLoop表示一个主事件循环，由g_main_loop_new创建 */
 	GMainLoop *loop = g_main_loop_new(NULL, FALSE);
+	GMainContext *context = g_main_loop_get_context(loop);
 
-	/* 添加超时事件源 */
-	g_timeout_add(500, count_down, NULL);
-	g_timeout_add(8000, cancel_fire, loop);
+	/* GSourceFuncs 包含一张函数表用于以通用的方式处理事件 */
+	GSourceFuncs g_source_myidle_funcs = {
+		g_source_myidle_prepare,
+		g_source_myidle_check,
+		g_source_myidle_dispatch,
+		g_source_myidle_finalize,
+	};
 
-	/* 添加空闲函数，当没有更高优先级的事件时，
-	 * 空闲函数就会被执行
+	/* 通过调用g_source_new 创建新事件源的实例，
+	 * 创建时需传递新事件源结构体的大小和一张函数表，
+	 * 而这张函数表决定了新事件源的行为
 	 */
-	g_idle_add(say_idle, NULL);
+	GSource *source =
+	    g_source_new(&g_source_myidle_funcs, sizeof(GSourceMyIdle));
 
-	/* 该函数将不停地检查事件源中是否有新事件进行分发
-	 *
-	 * 在某事件处理函数中调用 g_main_loop_quit 将导致
-	 * 该函数退出
+	/* 设置 source 的回调函数 */
+	g_source_set_callback(source, (GSourceFunc) myidle,
+			      "KernelNewbies", NULL);
+
+	/* 该 source 未与任何 GMainContext 关联
+	 * 调用 g_source_attach 可将 source 和一个 GMainContext 关联起来
 	 */
+	g_source_attach(source, context);
+	g_source_unref(source);
+
 	g_main_loop_run(loop);
+
+	g_main_context_unref(context);
+	g_main_loop_unref(loop);
 
 	return 0;
 }
 
-/* 超时事件处理函数
- *
- * 该函数会重复运行直到返回 FALSE，
- * 与此同时，定时器被销毁
+/* prepare 函数检查事件源是否有事件发生，
+ * 如果已经有事件发生，则无需 poll
  */
-gboolean count_down(gpointer data)
+gboolean g_source_myidle_prepare(GSource * source, gint * timeout)
 {
-	static int counter = 10;
+	/* 使 poll 的超时为 0，不允许 poll 阻塞 */
+	*timeout = 0;
 
-	if (counter < 1) {
-		printf("-----[FIRE]-----\n");
-
-		/* 定时器被销毁，count_down 不会被再次运行 */
-		return FALSE;
-	}
-
-	printf("-----[% 4d]-----\n", counter--);
-
-	/* count_down 在发生下次超时事件时运行 */
 	return TRUE;
 }
 
-/* 超时事件处理函数 */
-gboolean cancel_fire(gpointer data)
+/* check 函数检查事件源是否有事件发生 */
+gboolean g_source_myidle_check(GSource * source)
 {
-	GMainLoop *loop = data;
-
-	printf("-----[QUIT]-----\n");
-	/* 退出主循环，g_main_loop_run 返回 */
-	g_main_loop_quit(loop);
-
-	return FALSE;
+	/* 每次检查 myidle 事件源，都有 myidle 事件发生
+	 *
+	 * 该示例中，prepare 返回 TRUE，check 返回 TRUE 或 FALSE 的结果是一样的
+	 */
+	// return FALSE;
+	return TRUE;
 }
 
-/* 空闲函数
- *
- * 如果该函数返回 FALSE，该事件源将被删除，该函数不会再次运行
- */
-gboolean say_idle(gpointer data)
+/* 分发事件源的事件，实际就是调用事件源的回调函数 */
+gboolean g_source_myidle_dispatch(GSource * source,
+				  GSourceFunc callback, gpointer user_data)
 {
-	printf("-----[IDLE]-----\n");
+	gboolean again;
 
- 	/* 如果该函数返回 FALSE，该事件源将被删除，
-	 * 该函数不会再次运行
+	/* 如果未调用 g_source_set_callback 为该事件源设置回调函数
+	 * callback 可能为 NULL
 	 */
-	return FALSE;
+	if (!callback) {
+		g_warning("no callback");
 
- 	/* 如果该函数返回 TRUE
-	 * 该函数会在没有更高优先级的事件时，再次运行
+		return FALSE;
+	}
+
+	/* 当需要删除事件源时，dispatch 函数返回 G_SOURCE_REMOVE，
+	 * 当需要保留事件源时，dispatch 函数返回 G_SOURCE_CONTINUE
+	 *
+	 * 根据回调函数的结果决定是否保留该事件源
 	 */
-	// return TRUE;
+	again = callback(user_data);
+
+	return again;
+}
+
+/* source 被销毁前调用，做一些释放资源的工作 */
+void g_source_myidle_finalize(GSource * source)
+{
+}
+
+gboolean myidle(gchar * message)
+{
+	g_print("%s\n", message);
+
+	/* 保留事件源 */
+	// return G_SOURCE_CONTINUE;
+
+	/* 删除事件源 */
+	return G_SOURCE_REMOVE;
 }
