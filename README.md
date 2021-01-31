@@ -1,3 +1,9 @@
+# About
+
+关于 glib 的详细讲解，请关注微信公众号 KernelNewbies：
+
+![微信搜一搜 KernelNewbies](kernelnewbies.jpg)
+
 ## Install Glib2.0
 
 ```
